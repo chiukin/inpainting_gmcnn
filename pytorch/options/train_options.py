@@ -6,42 +6,41 @@ class TrainOptions:
     def __init__(self):
         self.parser = argparse.ArgumentParser()
         self.initialized = False
-        self.dataset_training_paths = {
-            'celebahq': '',
-            'celeba': '',
-            'places2': '',
-            'imagenet': '',
-            'paris_streetview': '',
-            'places2full': '',
-            'adobe_5k': '',
-            'celeba_wild': ''
-        }
 
     def initialize(self):
-        self.parser.add_argument('--dataset', type=str, default='paris_streetview', help='The dataset of the experiment.')
-        self.parser.add_argument('--data_file', type=str, default='', help='the file storing training file paths')
-        self.parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0')
-        self.parser.add_argument('--checkpoints_dir', type=str, default='./checkpoints', help='models are saved here')
+        # experiment specifics
+        self.parser.add_argument('--dataset', type=str, default='paris_streetview',
+                                 help='dataset of the experiment.')
+        self.parser.add_argument('--data_file', type=str, default='', help='the file storing training image paths')
+        self.parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2')
+        self.parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints', help='models are saved here')
         self.parser.add_argument('--load_model_dir', type=str, default='', help='pretrained models are given here')
-        self.parser.add_argument('--model_prefix', type=str, default='snap', help='models are saved here')
+        self.parser.add_argument('--phase', type=str, default='train')
 
+        # input/output sizes
         self.parser.add_argument('--batch_size', type=int, default=16, help='input batch size')
 
+        # for setting inputs
+        self.parser.add_argument('--random_crop', type=int, default=1,
+                                 help='using random crop to process input image when '
+                                      'the required size is smaller than the given size')
         self.parser.add_argument('--random_mask', type=int, default=1)
         self.parser.add_argument('--mask_type', type=str, default='rect')
         self.parser.add_argument('--pretrain_network', type=int, default=0)
-        self.parser.add_argument('--gan_loss_alpha', type=float, default=1e-3)
-        self.parser.add_argument('--wgan_gp_lambda', type=float, default=10)
-        self.parser.add_argument('--pretrain_l1_alpha', type=float, default=1.2)
-        self.parser.add_argument('--l1_loss_alpha', type=float, default=1.4)
-        self.parser.add_argument('--ae_loss_alpha', type=float, default=1.2)
-        self.parser.add_argument('--mrf_alpha', type=float, default=0.05)
+        self.parser.add_argument('--lambda_adv', type=float, default=1e-3)
+        self.parser.add_argument('--lambda_rec', type=float, default=1.4)
+        self.parser.add_argument('--lambda_ae', type=float, default=1.2)
+        self.parser.add_argument('--lambda_mrf', type=float, default=0.05)
+        self.parser.add_argument('--lambda_gp', type=float, default=10)
         self.parser.add_argument('--random_seed', type=bool, default=False)
+        self.parser.add_argument('--padding', type=str, default='SAME')
+        self.parser.add_argument('--D_max_iters', type=int, default=5)
         self.parser.add_argument('--lr', type=float, default=1e-5, help='learning rate for training')
 
         self.parser.add_argument('--train_spe', type=int, default=1000)
-        self.parser.add_argument('--max_iters', type=int, default=40000)
+        self.parser.add_argument('--epochs', type=int, default=40)
         self.parser.add_argument('--viz_steps', type=int, default=5)
+        self.parser.add_argument('--spectral_norm', type=int, default=1)
 
         self.parser.add_argument('--img_shapes', type=str, default='256,256,3',
                                  help='given shape parameters: h,w,c or h,w')
@@ -49,13 +48,17 @@ class TrainOptions:
                                  help='given mask parameters: h,w')
         self.parser.add_argument('--max_delta_shapes', type=str, default='32,32')
         self.parser.add_argument('--margins', type=str, default='0,0')
+
+
         # for generator
         self.parser.add_argument('--g_cnum', type=int, default=32,
                                  help='# of generator filters in first conv layer')
         self.parser.add_argument('--d_cnum', type=int, default=64,
                                  help='# of discriminator filters in first conv layer')
 
+        # for id-mrf computation
         self.parser.add_argument('--vgg19_path', type=str, default='vgg19_weights/imagenet-vgg-verydeep-19.mat')
+        # for instance-wise features
         self.initialized = True
 
     def parse(self):
@@ -63,9 +66,7 @@ class TrainOptions:
             self.initialize()
         self.opt = self.parser.parse_args()
 
-        assert self.opt.dataset in self.dataset_training_paths.keys()
-        self.opt.dataset_path = \
-            self.dataset_training_paths[self.opt.dataset] if self.opt.data_file == '' else self.opt.data_file
+        self.opt.dataset_path = self.opt.data_file
 
         str_ids = self.opt.gpu_ids.split(',')
         self.opt.gpu_ids = []
@@ -74,11 +75,19 @@ class TrainOptions:
             if id >= 0:
                 self.opt.gpu_ids.append(str(id))
 
+        assert self.opt.random_crop in [0, 1]
+        self.opt.random_crop = True if self.opt.random_crop == 1 else False
+
         assert self.opt.random_mask in [0, 1]
         self.opt.random_mask = True if self.opt.random_mask == 1 else False
 
         assert self.opt.pretrain_network in [0, 1]
         self.opt.pretrain_network = True if self.opt.pretrain_network == 1 else False
+
+        assert self.opt.spectral_norm in [0, 1]
+        self.opt.spectral_norm = True if self.opt.spectral_norm == 1 else False
+
+        assert self.opt.padding in ['SAME', 'MIRROR']
 
         assert self.opt.mask_type in ['rect', 'stroke']
 
@@ -107,10 +116,10 @@ class TrainOptions:
         self.opt.model_folder += '_randmask-' + self.opt.mask_type if self.opt.random_mask else ''
         self.opt.model_folder += '_pretrain' if self.opt.pretrain_network else ''
 
-        if os.path.isdir(self.opt.checkpoints_dir) is False:
-            os.mkdir(self.opt.checkpoints_dir)
+        if os.path.isdir(self.opt.checkpoint_dir) is False:
+            os.mkdir(self.opt.checkpoint_dir)
 
-        self.opt.model_folder = os.path.join(self.opt.checkpoints_dir, self.opt.model_folder)
+        self.opt.model_folder = os.path.join(self.opt.checkpoint_dir, self.opt.model_folder)
         if os.path.isdir(self.opt.model_folder) is False:
             os.mkdir(self.opt.model_folder)
 
